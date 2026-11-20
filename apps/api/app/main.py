@@ -2,7 +2,9 @@
 import io
 import os
 from html import escape
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from .auth import authenticated_principal, authorize
+from .security import Principal
 from fastapi.responses import StreamingResponse
 from sqlalchemy import create_engine, String, ForeignKey, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
@@ -44,11 +46,13 @@ app = FastAPI(title="TranscriptGen Sprint 1")
 @app.get("/api/health")
 def health(): return {"status":"ok"}
 @app.get("/api/schools")
-def schools():
+def schools(principal: Principal = Depends(authenticated_principal)):
+    # No global school directory is exposed to tenant-scoped users.
     with Session(engine) as db:
-        return [{"id":s.id,"name":s.name} for s in db.scalars(select(School)).all()]
+        return [{"id":s.id,"name":s.name} for s in db.scalars(select(School).where(School.id == principal.tenant_id)).all()]
 @app.get("/api/schools/{school_id}/students")
-def students(school_id: str):
+def students(school_id: str, principal: Principal = Depends(authenticated_principal)):
+    authorize(principal, school_id, "student:read")
     with Session(engine) as db:
         if not db.get(School,school_id): raise HTTPException(404,"School not found")
         return [{"id":s.id,"name":s.name,"grade_level":s.grade_level} for s in db.scalars(select(Student).where(Student.school_id==school_id)).all()]
@@ -59,9 +63,12 @@ def transcript_data(school_id: str,student_id: str):
         grades=db.scalars(select(Grade).where(Grade.student_id==student_id)).all()
         return {"school":school.name,"student":student.name,"grade_level":student.grade_level,"status":"SAMPLE - NOT OFFICIAL","grades":[{"course":g.course,"academic_year":g.academic_year,"grade":g.grade} for g in grades]}
 @app.get("/api/schools/{school_id}/students/{student_id}/transcript")
-def transcript(school_id:str,student_id:str): return transcript_data(school_id,student_id)
+def transcript(school_id:str,student_id:str,principal: Principal = Depends(authenticated_principal)):
+    authorize(principal,school_id,"transcript:read")
+    return transcript_data(school_id,student_id)
 @app.get("/api/schools/{school_id}/students/{student_id}/transcript.pdf")
-def transcript_pdf(school_id:str,student_id:str):
+def transcript_pdf(school_id:str,student_id:str,principal: Principal = Depends(authenticated_principal)):
+    authorize(principal,school_id,"transcript:read")
     data=transcript_data(school_id,student_id)
     buf=io.BytesIO()
     styles=getSampleStyleSheet()
